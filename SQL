@@ -1,0 +1,120 @@
+WITH        
+--Compute for FREQUENCY & MONETARY        
+t1 AS        
+(        
+    SELECT        
+    CustomerID,        
+    MAX(InvoiceDate) AS last_purchase_date,        
+    COUNT(DISTINCT InvoiceNo) AS frequency,        
+    ROUND(SUM(UnitPrice*Quantity),2) AS monetary        
+    FROM `tc-da-1.turing_data_analytics.rfm`        
+    WHERE InvoiceDate BETWEEN '2010-12-01' AND '2011-12-02'        
+    AND CustomerID IS NOT NULL        
+    AND InvoiceNo NOT LIKE 'C%'        
+    AND UnitPrice > 0        
+    AND Quantity >0        
+    GROUP BY CustomerID, Country        
+),        
+--Compute for RECENCY        
+t2 AS        
+    (        
+    SELECT *,        
+    DATE_DIFF(reference_date, last_purchase_date, DAY) AS recency        
+    FROM (        
+        SELECT *,        
+        MAX(last_purchase_date) OVER () AS reference_date        
+        FROM t1        
+    )        
+),        
+t3 AS        
+(        
+    SELECT        
+    a.*,        
+    --ALL percentiles for MONETARY        
+    b.percentiles[offset(25)] AS m25,        
+    b.percentiles[offset(50)] AS m50,        
+    b.percentiles[offset(75)] AS m75,        
+    b.percentiles[offset(100)] AS m100,        
+    --All percentiles for FREQUENCY        
+    c.percentiles[offset(25)] AS f25,        
+    c.percentiles[offset(50)] AS f50,        
+    c.percentiles[offset(75)] AS f75,        
+    c.percentiles[offset(100)] AS f100,        
+    --All percentiles for RECENCY        
+    d.percentiles[offset(25)] AS r25,        
+    d.percentiles[offset(50)] AS r50,        
+    d.percentiles[offset(75)] AS r75,        
+    d.percentiles[offset(100)] AS r100        
+    FROM t2 a,        
+    (SELECT APPROX_QUANTILES(monetary, 100) percentiles FROM t2) b,        
+    (SELECT APPROX_QUANTILES(frequency, 100) percentiles FROM t2) c,        
+    (SELECT APPROX_QUANTILES(recency, 100) percentiles FROM t2) d        
+),        
+t4 AS        
+(        
+    SELECT *,        
+    CAST(ROUND((f_score + m_score) / 2 ,0) AS INT64) AS fm_score,
+    CONCAT(r_score, f_score, m_score) rfm_score
+    FROM        
+    (        
+        SELECT *,        
+        CASE WHEN monetary <= m25 THEN 1        
+        WHEN monetary <= m50 AND monetary > m25 THEN 2        
+        WHEN monetary <= m75 AND monetary > m50 THEN 3        
+        WHEN monetary <= m100 AND monetary > m75 THEN 4        
+        END AS m_score,        
+        CASE WHEN frequency <= f25 THEN 1        
+        WHEN frequency <= f50 AND frequency > f25 THEN 2        
+        WHEN frequency <= f75 AND frequency > f50 THEN 3        
+        WHEN frequency <= f100 AND frequency > f75 THEN 4        
+        END f_score,        
+        CASE WHEN recency <= r25 THEN 4        
+        WHEN recency <= r50 AND recency > r25 THEN 3        
+        WHEN recency <= r75 AND recency >r50 THEN 2        
+        WHEN recency <= r100 AND recency > r75 THEN 1        
+        END r_score        
+        FROM t3
+    )        
+),        
+t5 AS        
+(        
+    SELECT        
+    CustomerID,        
+    recency,        
+    frequency,        
+    monetary,        
+    r_score,        
+    f_score,        
+    m_score,        
+    rfm_score,        
+    CASE WHEN (r_score = 4 AND f_score = 4 AND m_score = 4) 
+    THEN 'Champions' 
+    --Customers who bought most recently, most often and spend the most        
+    WHEN rfm_score IN ('334', '342', '343', '344', '433', '434', '443')
+    THEN 'Loyal Customers' 
+       --Customers who bought most frequently and recently        
+    WHEN rfm_score IN ('332','333','341','412','413','414','431','432','441','442','421','422','423','424')
+    THEN 'Potential to Loyal'        
+    WHEN rfm_score IN ('411')
+    THEN 'New Customers'
+    WHEN rfm_score IN ('311','312','313','331')
+    THEN 'Promising'
+    WHEN rfm_score IN ('212','213','214','231','232','233','241','314','321','322','323','324')
+    THEN 'Need Attention' 
+      -- haven't bought for a while and made only one or few orders                
+    WHEN rfm_score IN ('211')
+    THEN 'About to sleep' 
+      --Customers who didn't buy for a while and were not very active before                
+    WHEN rfm_score IN ('112','113','114','131','132','133','142','124','123','122','121','224','223','222','221')
+    THEN 'At risk'        
+    WHEN rfm_score IN ('134','143','144','234','242','243','244')
+    THEN 'Cant lose them'
+    WHEN  rfm_score IN ('141')
+    THEN 'Hibernating'        
+    WHEN  rfm_score IN ('111')
+    THEN 'Lost'
+    END AS rfm_segment        
+    FROM t4        
+)        
+SELECT *        
+FROM t5        
